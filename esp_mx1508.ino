@@ -1,6 +1,6 @@
 /* (c) Andreas' Hobby
  * (Lego-)TrainController via MX1508 motor driver v1.2
- * Sketch is controlling up to 2 motors via mx1508 driver boards and an ESP32 device 
+ * Sketch is controlling up to 2 motors via mx1508 driver boards and an ESP8266/ESP32 device 
  *  - controllable via HTTP request (implemented), MQTT possible to adapt
  * Based on examples from Neil Kolban and chegewara
  */
