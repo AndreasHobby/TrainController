@@ -20,16 +20,16 @@ String IP = "";                           //stores current IP address
 AsyncWebServer server(80);                //stores webserver data
 //*****************************************************************************************************************
 // ** PWM declarations **
-const int Pin1 = 12;                      //used pin for connection to mx1508 driver: In1
-const int Pin2 = 13;                      //used pin for connection to mx1508 driver: In2
-const int Pin3 = 14;                      //used pin for connection to mx1508 driver: In3
-const int Pin4 = 27;                      //used pin for connection to mx1508 driver: In4
-int MotorSpeed[2];                        //stores the current motor speed (range: -255 .. 0 .. +255)
+#define MOTOR_MAX                   2      //define number of motors to be controlled (can be adapted as long as compatible outputs are free)
+int Pin1[MOTOR_MAX] = {D1, D1};            //define pin1 for connection to mx1508 driver(s)
+int Pin2[MOTOR_MAX] = {D2, D2} ;           //define pin2 for connection to mx1508 driver(s)
+int MotorSpeed[MOTOR_MAX];                 //stores the current motor speed (range: -255 .. 0 .. +255)
 //*****************************************************************************************************************
 // ** WATCHDOG declarations **
-bool Watchdog[2];                         //stores state of watchdog
-static unsigned long WatchdogTimeout[2];  //stores time stamp the watchdog will stop the motor if no request is read in
-#define WatchdogTimeoutTime 5000          //define watchdog timeout in Milliseconds
+#define Config_Watchdog             true   //configure watchdog feature
+#define Config_WatchdogTimeoutTime  5000   //define watchdog timeout in Milliseconds
+bool WatchdogState[MOTOR_MAX];             //stores state of watchdog
+unsigned long WatchdogTimeout[MOTOR_MAX];  //stores time stamp the watchdog will stop the motor if no request is read in
 //*****************************************************************************************************************
 // ** voltage measuring declarations **
 #define Config_VoltageReadInterval  60000  //define voltage read interval in Milliseconds
@@ -111,67 +111,43 @@ void initWifi() {
 };
 
 //*****************************************************************************************************************
-// stop motor
+// stop motor of given channel
 void FUN_doStop(int channel) {
-int PinA, PinB;
-  if (channel == 0)
-  {
-    PinA = Pin1;
-    PinB = Pin2;
-  }
-  else
-  {
-    PinA = Pin3;
-    PinB = Pin4;
-  }
+  WatchdogState[channel] = false;          //reset watchdog state
   MotorSpeed[channel] = 0;
-  // set both outputs to low level to stop motor
-  #if defined(ESP8266)
-  digitalWrite(PinA, 0);
-  digitalWrite(PinB, 0);
-  #else
-  analogWrite(PinA, 0);
-  analogWrite(PinB, 0);
-  #endif
+  analogWrite(Pin1[channel], 0);           //set both outputs to low level to stop motor
+  analogWrite(Pin2[channel], 0);           //set both outputs to low level to stop motor
 }
-
-// power motor by given value (range -255 .. 0 .. +255)
+//*****************************************************************************************************************
+// power motor of given channel by given value (range -255 .. 0 .. +255)
 void FUN_doControl(int channel, int power) {
-int PinA, PinB;
-  if (channel == 0)
-  {
-    PinA = Pin1;
-    PinB = Pin2;
-  }
-  else
-  {
-    PinA = Pin3;
-    PinB = Pin4;
-  }
-  Watchdog[channel] = true;            //enable watchdog to auto stop motor in case of connection fault
-  WatchdogTimeout[channel] = millis() + WatchdogTimeoutTime;
-  MotorSpeed[channel] = power;
   if (power == 0) {
     FUN_doStop(channel);
   } else {
-    int powerControl = power*4; //convert 8 bit value to 10 bit, because ESP8266 is using 10 bit PWM as standard
+    WatchdogState[channel] =              Config_Watchdog;            //enable watchdog to auto stop motor in case of connection fault
+    WatchdogTimeout[channel] = millis() + Config_WatchdogTimeoutTime; //calculate next time stamp (when the time is reached without an update (new request) the motor will be stopped
+    MotorSpeed[channel] = power;
+#if defined(ESP8266)
+    power = power*4;
+#endif    
     if (power > 0) {
-      analogWrite(PinA, powerControl);
-      analogWrite(PinB, 0);
+      analogWrite(Pin1[channel], power);
+      analogWrite(Pin2[channel], 0);
     } else {
-      analogWrite(PinA, 0);
-      analogWrite(PinB, -powerControl);
+      analogWrite(Pin1[channel], 0);
+      analogWrite(Pin2[channel], -power);                             //negative value means that the polarity of the motor needs to be shifted (here we switch the pins); negative values needs to be inverted
     }
   }
 }
-
-// watchdog
-void watchdog(int channel) {
-  if(Watchdog[channel]) {                      
-    if (millis() > WatchdogTimeout[channel]){  //WatchdogTimeout is the time in milliseconds
-      FUN_doStop(channel);                       //stop motor in case of timeout (no new control request was received after given time
-      Watchdog[channel] = false;
-    } 
+//*****************************************************************************************************************
+// watchdog: checks running time of motor after last request, if time is exceeding the motor will be stopped
+void loop_Watchdog() {
+  for (int i=0; i < MOTOR_MAX; i++){
+    if(WatchdogState[i]) {                      
+      if (millis() > WatchdogTimeout[i]){
+        FUN_doStop(i);                     //stop motor in case of timeout (no new control request was received after given time
+      } 
+    }
   }
 }
 //*****************************************************************************************************************
@@ -185,28 +161,34 @@ void loop_AkkuVoltageRead() {
   }
 }
 //*****************************************************************************************************************
-// arduino IDE main setup procedure
-void setup() {
-  Serial.begin(115200);
+// init MotorDriverPWM
+void initMotorDriver() {
   #if defined(ESP8266)
   analogWriteFreq(19500); //PWM frequency: ~19500 Hz
   #else
-  analogWriteFrequency(19500);
+  analogWriteFrequency(19500);             //set PWM frequency to 19.5kHz to reduce motor noise
+  analogWriteResolution(8);                //set ADC resolution to 8 bits
   #endif
-  pinMode(Pin1, OUTPUT);
-  pinMode(Pin2, OUTPUT);
-  initWifi();
-  Watchdog[0] = false;
-  Watchdog[1] = false;
-  MotorSpeed[0] = 0;
-  MotorSpeed[1] = 0;
+  for (int i=0; i < MOTOR_MAX; i++){
+    pinMode(Pin1[i], OUTPUT);              //define ADC pins as outputs
+    pinMode(Pin2[i], OUTPUT);              //define ADC pins as outputs
+  }
+  for (int i=0; i < MOTOR_MAX; i++){
+    FUN_doStop(i);                         //execute stop command for all motors
+  }
+  Serial.println("init Motor driver done");
 }
-
+//*****************************************************************************************************************
+// arduino IDE standard calls
+void setup() {
+  Serial.begin(115200);                    //enable serial interface with 115200 baud
+  initMotorDriver();                       //init Motor driver
+  initWifi();                              //init Wifi and OTA (after one time flashing via USB PORT, next time the ESP32 can be flashed via WLAN
+}
 // arduino IDE main loop procedure
 void loop() {
   ArduinoOTA.handle();                     //needed to act on OTA requests
-  watchdog(0);                             //execute watchdog
-  watchdog(1);                             //execute watchdog
+  loop_Watchdog();                         //cyclic execute watchdog
   loop_AkkuVoltageRead();                  //cyclic read voltage
 }
 
